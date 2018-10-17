@@ -612,7 +612,8 @@ define([
                     if (waitingTile !== lastAncestor) {
                         waitingTile._finalResolution = false;
                     }
-                    selectTile(tileset, waitingTile, frameState);
+                    var isHeightmap = defined(waitingTile._header.extras) && waitingTile._header.extras.isHeightmap == true;
+                    if (!isHeightmap || !waitingTile._childNonHeightmapSelected) selectTile(tileset, waitingTile, frameState);
                     continue;
                 }
             }
@@ -629,6 +630,8 @@ define([
             var childrenLength = children.length;
             var traverse = canTraverse(tileset, tile);
 
+            tile._childNonHeightmapSelected = false;
+
             if (shouldSelect) {
                 if (add) {
                     selectTile(tileset, tile, frameState);
@@ -638,6 +641,12 @@ define([
                         tileset._hasMixedContent = true;
                     }
                     lastAncestor = tile;
+                    if (!(defined(tile._header.extras) && tile._header.extras.isHeightmap == true))
+                    {
+                        for (let a = 0; a < ancestorStack.length; a++) {
+                            ancestorStack.get(a)._childNonHeightmapSelected = true;
+                        }
+                    }
                     if (!traverse) {
                         selectTile(tileset, tile, frameState);
                         continue;
