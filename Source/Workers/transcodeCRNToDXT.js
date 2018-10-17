@@ -4,6 +4,7 @@ define([
         '../Core/PixelFormat',
         '../Core/RuntimeError',
         '../ThirdParty/crunch',
+        '../ThirdParty/crunch_unity',
         './createTaskProcessorWorker'
     ], function(
         CompressedTextureBuffer,
@@ -11,6 +12,7 @@ define([
         PixelFormat,
         RuntimeError,
         crunch,
+        crunch_unity,
         createTaskProcessorWorker) {
     'use strict';
 
@@ -67,6 +69,10 @@ define([
     var dxtData;
     var cachedDstSize = 0;
 
+    var dst_unity;
+    var dxtData_unity;
+    var cachedDstSize_unity = 0;
+
     // Copy an array of bytes into or out of the emscripten heap.
     function arrayBufferCopy(src, dst, dstByteOffset, numBytes) {
         var i;
@@ -89,58 +95,118 @@ define([
         // Copy the contents of the arrayBuffer into emscriptens heap.
         var srcSize = arrayBuffer.byteLength;
         var bytes = new Uint8Array(arrayBuffer);
-        var src = crunch._malloc(srcSize);
-        arrayBufferCopy(bytes, crunch.HEAPU8, src, srcSize);
 
-        // Determine what type of compressed data the file contains.
-        var crnFormat = crunch._crn_get_dxt_format(src, srcSize);
-        var format = DXT_FORMAT_MAP[crnFormat];
-        if (!defined(format)) {
-            throw new RuntimeError('Unsupported compressed format.');
-        }
+        //Steven: Use crunch_unity if this spare byte is set to 1
+        if (bytes[28] == 1)
+        {
+            var src = crunch_unity._malloc(srcSize);
+            arrayBufferCopy(bytes, crunch_unity.HEAPU8, src, srcSize);
 
-        // Gather basic metrics about the DXT data.
-        var levels = crunch._crn_get_levels(src, srcSize);
-        var width = crunch._crn_get_width(src, srcSize);
-        var height = crunch._crn_get_height(src, srcSize);
-
-        // Determine the size of the decoded DXT data.
-        var dstSize = 0;
-        var i;
-        for (i = 0; i < levels; ++i) {
-            dstSize += PixelFormat.compressedTextureSizeInBytes(format, width >> i, height >> i);
-        }
-
-        // Allocate enough space on the emscripten heap to hold the decoded DXT data
-        // or reuse the existing allocation if a previous call to this function has
-        // already acquired a large enough buffer.
-        if(cachedDstSize < dstSize) {
-            if(defined(dst)) {
-                crunch._free(dst);
+            // Determine what type of compressed data the file contains.
+            var crnFormat = crunch_unity._crn_get_dxt_format(src, srcSize);
+            var format = DXT_FORMAT_MAP[crnFormat];
+            if (!defined(format)) {
+                throw new RuntimeError('Unsupported compressed format.');
             }
-            dst = crunch._malloc(dstSize);
-            dxtData = new Uint8Array(crunch.HEAPU8.buffer, dst, dstSize);
-            cachedDstSize = dstSize;
+
+            // Gather basic metrics about the DXT data.
+            var levels = crunch_unity._crn_get_levels(src, srcSize);
+            var width = crunch_unity._crn_get_width(src, srcSize);
+            var height = crunch_unity._crn_get_height(src, srcSize);
+
+            // Determine the size of the decoded DXT data.
+            var dstSize = 0;
+            var i;
+            for (i = 0; i < levels; ++i) {
+                dstSize += PixelFormat.compressedTextureSizeInBytes(format, width >> i, height >> i);
+            }
+
+            // Allocate enough space on the emscripten heap to hold the decoded DXT data
+            // or reuse the existing allocation if a previous call to this function has
+            // already acquired a large enough buffer.
+            if(cachedDstSize_unity < dstSize) {
+                if(defined(dst_unity)) {
+                    crunch_unity._free(dst_unity);
+                }
+                dst_unity = crunch_unity._malloc(dstSize);
+                dxtData_unity = new Uint8Array(crunch_unity.HEAPU8.buffer, dst_unity, dstSize);
+                cachedDstSize_unity = dstSize;
+            }
+
+            // Decompress the DXT data from the Crunch file into the allocated space.
+            crunch_unity._crn_decompress(src, srcSize, dst_unity, dstSize, 0, levels);
+
+            // Release the crunch file data from the emscripten heap.
+            crunch_unity._free(src);
+
+            // Mipmaps are unsupported, so copy the level 0 texture
+            // When mipmaps are supported, a copy will still be necessary as dxtData is a view on the heap.
+            var length = PixelFormat.compressedTextureSizeInBytes(format, width, height);
+
+            // Get a copy of the 0th mip level. dxtData will exceed length when there are more mip levels.
+            // Equivalent to dxtData.slice(0, length), which is not supported in IE11
+            var level0DXTDataView = dxtData_unity.subarray(0, length);
+            var level0DXTData = new Uint8Array(length);
+            level0DXTData.set(level0DXTDataView, 0);
+
+            transferableObjects.push(level0DXTData.buffer);
+            return new CompressedTextureBuffer(format, width, height, level0DXTData);
         }
+        else
+        {
+            var src = crunch._malloc(srcSize);
+            arrayBufferCopy(bytes, crunch.HEAPU8, src, srcSize);
 
-        // Decompress the DXT data from the Crunch file into the allocated space.
-        crunch._crn_decompress(src, srcSize, dst, dstSize, 0, levels);
+            // Determine what type of compressed data the file contains.
+            var crnFormat = crunch._crn_get_dxt_format(src, srcSize);
+            var format = DXT_FORMAT_MAP[crnFormat];
+            if (!defined(format)) {
+                throw new RuntimeError('Unsupported compressed format.');
+            }
 
-        // Release the crunch file data from the emscripten heap.
-        crunch._free(src);
+            // Gather basic metrics about the DXT data.
+            var levels = crunch._crn_get_levels(src, srcSize);
+            var width = crunch._crn_get_width(src, srcSize);
+            var height = crunch._crn_get_height(src, srcSize);
 
-        // Mipmaps are unsupported, so copy the level 0 texture
-        // When mipmaps are supported, a copy will still be necessary as dxtData is a view on the heap.
-        var length = PixelFormat.compressedTextureSizeInBytes(format, width, height);
+            // Determine the size of the decoded DXT data.
+            var dstSize = 0;
+            var i;
+            for (i = 0; i < levels; ++i) {
+                dstSize += PixelFormat.compressedTextureSizeInBytes(format, width >> i, height >> i);
+            }
 
-        // Get a copy of the 0th mip level. dxtData will exceed length when there are more mip levels.
-        // Equivalent to dxtData.slice(0, length), which is not supported in IE11
-        var level0DXTDataView = dxtData.subarray(0, length);
-        var level0DXTData = new Uint8Array(length);
-        level0DXTData.set(level0DXTDataView, 0);
+            // Allocate enough space on the emscripten heap to hold the decoded DXT data
+            // or reuse the existing allocation if a previous call to this function has
+            // already acquired a large enough buffer.
+            if(cachedDstSize < dstSize) {
+                if(defined(dst)) {
+                    crunch._free(dst);
+                }
+                dst = crunch._malloc(dstSize);
+                dxtData = new Uint8Array(crunch.HEAPU8.buffer, dst, dstSize);
+                cachedDstSize = dstSize;
+            }
 
-        transferableObjects.push(level0DXTData.buffer);
-        return new CompressedTextureBuffer(format, width, height, level0DXTData);
+            // Decompress the DXT data from the Crunch file into the allocated space.
+            crunch._crn_decompress(src, srcSize, dst, dstSize, 0, levels);
+
+            // Release the crunch file data from the emscripten heap.
+            crunch._free(src);
+
+            // Mipmaps are unsupported, so copy the level 0 texture
+            // When mipmaps are supported, a copy will still be necessary as dxtData is a view on the heap.
+            var length = PixelFormat.compressedTextureSizeInBytes(format, width, height);
+
+            // Get a copy of the 0th mip level. dxtData will exceed length when there are more mip levels.
+            // Equivalent to dxtData.slice(0, length), which is not supported in IE11
+            var level0DXTDataView = dxtData.subarray(0, length);
+            var level0DXTData = new Uint8Array(length);
+            level0DXTData.set(level0DXTDataView, 0);
+
+            transferableObjects.push(level0DXTData.buffer);
+            return new CompressedTextureBuffer(format, width, height, level0DXTData);
+        }
     }
 
     return createTaskProcessorWorker(transcodeCRNToDXT);
